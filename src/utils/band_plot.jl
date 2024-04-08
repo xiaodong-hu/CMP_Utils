@@ -1,17 +1,14 @@
-module Band_Plot
-
 using LinearAlgebra, SparseArrays
 using Plots
 
 const Identity_Matrix = [[1 0; 0 1]]
 const Pauli_Matrices = [[0 1; 1 0], [0 -im; im 0], [1 0; 0 -1]]
 
-export band_plot, test
-export Identity_Matrix, Pauli_Matrices
+# export plot_band
 
 
 """
-Band Plot `band_plot` for a Given Hamiltonian and a kPath in BZ
+Plot Band `plot_band` for a Given Hamiltonian and a kPath in BZ
 ---
 Arguments:
 - `h_k_crys::Function`: function from `k_crys` to the Hamiltonian matrix.
@@ -23,7 +20,7 @@ Named Arguments:
 - `save_plot::Bool`: flag to save the plot as a PDF file (default: false).
 - `save_plot_dir::String`: the directory to save the plot (default: `mkpath ./figure` at current working directory).
 """
-function band_plot(h_k_crys::Function, kpath_list::Vector{Vector{Float64}}; kpoints::Int=30, nbands::Int64=10, save_plot::Bool=false, save_plot_dir::String="")::Tuple{Vector{Vector{Float64}},Vector{Matrix{Complex{Float64}}},Plots.Plot}
+function plot_band(h_k_crys::Function, kpath_list::Vector{Vector{Float64}}; kpoints::Int=30, nbands::Int64=10, save_plot::Bool=false, save_plot_dir::String="")::Tuple{Vector{Vector{Float64}},Vector{Matrix{Complex{Float64}}},Plots.Plot}
     @assert length(kpath_list) > 1 # check if there are at least two kpaths
     @assert [length(kpath) == 2 for kpath in kpath_list] |> all # check if each kpath is legal: `[kpath_start, kpath_end]`
 
@@ -74,7 +71,7 @@ function band_plot(h_k_crys::Function, kpath_list::Vector{Vector{Float64}}; kpoi
         end
         mkpath(save_plot_dir)
 
-        fig_path = joinpath(save_plot_dir, "band_plot.pdf")
+        fig_path = joinpath(save_plot_dir, "plot_band.pdf")
         savefig(fig, fig_path)
     else
         display(fig) # display only if not saving
@@ -93,9 +90,9 @@ function test()
 
     @show "Hello, World!"
 
-    band_plot(hk, k_crys_path; save_plot=true, save_plot_dir="/home/hxd/Dropbox/Julia_Projects/CMP_Utils/src/figure")
+    plot_band(hk, k_crys_path; save_plot=true, save_plot_dir="/home/hxd/Dropbox/Julia_Projects/CMP_Utils/src/figure")
 end
 
 
 
-end # module Band_Plot
+# end # module `Band_Plot`
