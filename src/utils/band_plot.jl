@@ -1,4 +1,5 @@
 using LinearAlgebra, SparseArrays
+using KrylovKit
 using Plots
 
 const Identity_Matrix = [[1 0; 0 1]]
@@ -8,60 +9,105 @@ const Pauli_Matrices = [[0 1; 1 0], [0 -im; im 0], [1 0; 0 -1]]
 
 
 """
-Plot Band `plot_band` for a Given Hamiltonian and a kPath in BZ
+Parse a kPath as a List of `nk_turning` and a List of kPoints Coordinates
 ---
+Here `kPath` is input as a list of turning points coordinates (can either be in `k_crys` or `k_cart`)
+"""
+function parse_k_path(; kpath::Vector{<:Vector}, nk::Int=50)::Tuple{Vector{Int64},Vector{Vector{Float64}}}
+    n_kpath = length(kpath) - 1
+    @assert n_kpath >= 1 # check if there are at least two kpaths
+
+    # determine `nk` for each kpath based on their lengths
+    kpath_length_list = [norm(kpath[i+1] - kpath[i]) for i in 1:n_kpath]
+    nk_list::Vector{Int64} = [ceil(nk * kpath_length / kpath_length_list[1]) |> Int64 for kpath_length in kpath_length_list]
+    nk_turning_list = [1; cumsum(nk_list) .+ 1] # add initial line to `nk_turning_list`; shift by 1 for each kpath
+
+    kpath_kpoint_list = let kpath_directional_vec_list = [(kpath[i+1] - kpath[i]) / nk_list[i] for i in 1:n_kpath]
+        # note: avoid nearby duplicates!
+        [[kpath[i] + n * kpath_directional_vec_list[i] for n in range(0, nk_list[i] - 1)] for i in 1:n_kpath]
+    end
+    # flatten `kpath_kpoint_list` to get the full list of kpoints
+    full_kpoint_list = reduce(vcat, kpath_kpoint_list)
+    push!(full_kpoint_list, kpath[end]) # manually add final point
+
+    return (nk_turning_list, full_kpoint_list)
+end
+
+
+function gen_eigensys_list_along_k_path(hk::Function; kpath::Vector{<:Vector}, nk::Int=50, nband::Int64=10)::Tuple{Vector{Vector{Float64}},Vector{Matrix{Complex{Float64}}}}
+    (_, full_kpoint_list) = parse_k_path(; kpath=kpath, nk=nk)
+
+    dim = length(kpath[1])
+    dim_H = size(hk(zeros(dim)))[1]
+    @assert nband <= dim_H
+
+    eigvals_list = Vector{Vector{Float64}}(undef, length(full_kpoint_list))
+    eigvecs_list = Vector{Matrix{Complex{Float64}}}(undef, length(full_kpoint_list))
+
+    @show is_sparse::Bool = hk(zeros(dim)) isa AbstractSparseArray
+    if is_sparse
+        # note: `eigsolve` return eigvecs as a list of vectors rather than a matrix
+        sparse_eigsys_list = [KrylovKit.eigsolve(hk(k), nband, :SR; ishermitian=true) for k in full_kpoint_list] # usage of specifying `ClosestTo(λ)` can be found in `https://jutho.github.io/KrylovKit.jl/v0.1/man/eig/`
+
+        eigvals_list = [sparse_eigsys[1][1:nband] for sparse_eigsys in sparse_eigsys_list]
+        eigvecs_list = [hcat(sparse_eigsys[2]...)[:, 1:nband] for sparse_eigsys in sparse_eigsys_list]
+    else
+        kpath_eigsys_list = [eigen(hk(k)) for k in full_kpoint_list]
+        (eigvals_list, eigvecs_list) = ([eigen.values[1:nband] for eigen in kpath_eigsys_list], [eigen.vectors[:, 1:nband] for eigen in kpath_eigsys_list])
+    end
+
+    # eigsys_list = [eigen(Hermitian(hk(k)) |> Matrix) for k in full_kpoint_list]
+    # (eigvals_list, eigvecs_list) = ([eigsys.values[1:nband] for eigsys in eigsys_list], [eigsys.vectors[:, 1:nband] for eigsys in eigsys_list])
+
+    return (eigvals_list, eigvecs_list)
+end
+
+
+"""
+Plot Band for a Given Hamiltonian Function and a kPath within BZ
+---
+Note: here `hk` and `kpath` can either be `k_crys` or `k_cart`. But the input must be consistent!
+
 Arguments:
-- `h_k_crys::Function`: function from `k_crys` to the Hamiltonian matrix.
-- `kpath_list::Vector{Vector{Float64}}`: the vector of kpaths of the form `[k_crys_start, k_crys_end]` within the BZ. Example: `[[0.0, 0.0], [π, 0.0], [π, π], [0.0, 0.0]]`
+- `hk::Function`: Hamiltonian matrix (either `k_crys` or `k_cart`).
+- `kpath::Vector{Vector{Float64}}`: list of turning kpoint coordinates within the BZ (either `k_crys` or `k_cart`). Crystal Coordinates Example: `[[0.0, 0.0], [π, 0.0], [π, π], [0.0, 0.0]]`
 
 Named Arguments:
-- `kpoints::Int`: the number of kpoints of the first kpath. The kpoints of other kpaths will be automatically scaled by their lengths.
-- `nbands::Int64`: the number of bands to plot (default: 10).
+- `nk::Int`: the number of kpoints of the first kpath. The `nk` of other kpaths will be scaled by their lengths.
+- `nband::Int64`: the number of bands to plot (default: 10).
 - `save_plot::Bool`: flag to save the plot as a PDF file (default: false).
 - `save_plot_dir::String`: the directory to save the plot (default: `mkpath ./figure` at current working directory).
 """
-function plot_band(h_k_crys::Function, kpath_list::Vector{Vector{Float64}}; kpoints::Int=30, nbands::Int64=10, save_plot::Bool=false, save_plot_dir::String="")::Tuple{Vector{Vector{Float64}},Vector{Matrix{Complex{Float64}}},Plots.Plot}
-    @assert length(kpath_list) > 1 # check if there are at least two kpaths
-    @assert [length(kpath) == 2 for kpath in kpath_list] |> all # check if each kpath is legal: `[kpath_start, kpath_end]`
-
-    kpath_length_list = [norm(kpath_list[i+1] - kpath_list[i]) for i in 1:(length(kpath_list)-1)]
-    kpoints_list::Vector{Int64} = [ceil(kpoints * kpath_length / kpath_length_list[1]) |> Int64 for kpath_length in kpath_length_list]
-    kpath_turning_points = [1; cumsum(kpoints_list) .+ 1] # add initial line to `kpath_turning_points`; shift by 1 for each kpath
-
-    kpath_k_crys_list = let kpath_step_list = [(kpath_list[i+1] - kpath_list[i]) / kpoints_list[i] for i in 1:(length(kpath_list)-1)]
-        # note: avoid nearby duplicates!
-        [[kpath_list[i] + n * kpath_step_list[i] for n in range(0, kpoints_list[i] - 1)] for i in 1:(length(kpath_list)-1)]
-    end
-    # flatten `kpath_k_crys_list` to list of vectors
-    kpath_k_crys_list = reduce(vcat, kpath_k_crys_list)
-    push!(kpath_k_crys_list, kpath_list[end]) # manually add final point
-
-    kpath_eigen_list = [eigen(Hermitian(h_k_crys(k_crys))) for k_crys in kpath_k_crys_list]
-    kpath_eigval_list = [eigen.values for eigen in kpath_eigen_list]
-    kpath_eigvec_list = [eigen.vectors for eigen in kpath_eigen_list]
-    # truncate bands if too many
-    if nbands < length(kpath_eigval_list[1])
-        kpath_eigval_list = [eigval[1:nbands] for eigval in kpath_eigval_list]
-        kpath_eigvec_list = [eigvec[:, 1:nbands] for eigvec in kpath_eigvec_list]
-    end
+function plot_band(hk::Function; kpath::Vector{<:Vector}, nk::Int=50, nband::Int64=10, ylims::Tuple{Number,Number}=(-5, 5), aspect_ratio::Number=1, save_plot::Bool=false, save_plot_dir::String="")::Tuple{Vector{Vector{Float64}},Vector{Matrix{Complex{Float64}}},Plots.Plot}
+    (nk_turning_list, full_kpoint_list) = parse_k_path(; kpath=kpath, nk=nk)
+    (eigvals_list, eigvecs_list) = gen_eigensys_list_along_k_path(hk; kpath=kpath, nk=nk, nband=nband)
 
     # initialize figure
     fig = plot(;
         # ylabel="E",
-        xlims=(-1, kpath_turning_points[end] + 2),
+        xlims=(-1, nk_turning_list[end] + 2),
+        ylims=ylims,
         xticks=false,
         legend=false,
-        framestyle=:box
+        framestyle=:box,
+        aspect_ratio=aspect_ratio * nk_turning_list[end] / (ylims[2] - ylims[1]), # 1:1 
     )
-    # add vertical line signifying high symmetry points from `kpoints_list`
-    for kpoint in kpath_turning_points
+    # add vertical line signifying high symmetry points from `nk_turning_list`
+    for kpoint in nk_turning_list
         vline!(fig, [kpoint], color=:black, alpha=0.32, lw=4)
     end
 
     # convert to appropriate data matrix for plotting
-    let kpath_eigval_data = hcat(kpath_eigval_list...) |> transpose
-        scatter!(fig, kpath_eigval_data,
-            color=collect(1:nbands) |> transpose # band color in default order
+    let kpath_eigval_data = hcat(eigvals_list...) |> transpose
+        # scatter!(fig, kpath_eigval_data,
+        #     color=collect(1:nband) |> transpose, # band color in default order
+        #     # color=:black,
+        #     markersize=1.5,
+        # )
+        plot!(fig, kpath_eigval_data,
+            color=collect(1:nband) |> transpose, # band color in default order
+            # color=:black,
+            lw=1.5,
         )
     end
 
@@ -71,26 +117,28 @@ function plot_band(h_k_crys::Function, kpath_list::Vector{Vector{Float64}}; kpoi
         end
         mkpath(save_plot_dir)
 
-        fig_path = joinpath(save_plot_dir, "plot_band.pdf")
+        fig_path = joinpath(save_plot_dir, "band_plot.pdf")
         savefig(fig, fig_path)
     else
         display(fig) # display only if not saving
     end
-    return (kpath_eigval_list, kpath_eigvec_list, fig)
+    return (eigvals_list, eigvecs_list, fig)
 end
+
+
 
 
 
 function test()
     t = 0.2
     μ = 0.5
-    hk = k_crys -> sum(k_crys .* Pauli_Matrices[1:2]) # a two-band model
+    hk = k_crys -> sum(k_crys .* Pauli_Matrices[1:2]) |> sparse # a two-band model
 
     k_crys_path = [[0.0, 0.0], [0.0, π], [π, π], [0.0, 0.0]]
 
     @show "Hello, World!"
 
-    plot_band(hk, k_crys_path; save_plot=true, save_plot_dir="/home/hxd/Dropbox/Julia_Projects/CMP_Utils/src/figure")
+    plot_band(hk; kpath=k_crys_path, nband=2, save_plot=true, save_plot_dir="/home/hxd/Dropbox/Julia_Projects/CMP_Utils/src/figure")
 end
 
 
