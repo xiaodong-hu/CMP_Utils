@@ -13,9 +13,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 SymEngine = "123dc426-2d89-5057-bbad-38513e3affd8"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-YAN = "02a0a688-1ac4-4fc8-a366-13b3768130b0"
 
 [compat]
 StaticArrays = "1.9.8"
 Test = "1.11.0"
-YAN = "0.1.0"
