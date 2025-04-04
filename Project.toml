@@ -18,3 +18,4 @@ YAN = "02a0a688-1ac4-4fc8-a366-13b3768130b0"
 [compat]
 StaticArrays = "1.9.8"
 Test = "1.11.0"
+YAN = "0.1.0"
